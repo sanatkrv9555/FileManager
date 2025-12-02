@@ -1,4 +1,4 @@
-name: AI Test Suggestions (debug)
+name: AI Test Suggestions
 
 on:
   pull_request:
@@ -16,70 +16,22 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Show environment info
-        run: |
-          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
-          echo "PR_NUMBER=${{ github.event.pull_request.number }}"
-          echo "PR_HEAD=${{ github.event.pull_request.head.ref }}"
-          echo "PR_BASE=${{ github.event.pull_request.base.ref }}"
-          echo "AI_SERVICE_URL=${{ secrets.AI_SERVICE_URL }}"
-          env
-
       - name: Fetch PR diff
         run: |
-          set -x
           git fetch origin ${{ github.event.pull_request.base.ref }} || true
           git diff origin/${{ github.event.pull_request.base.ref }}...${{ github.event.pull_request.head.ref }} > pr_diff.txt
-          echo "---- PR DIFF START ----"
-          sed -n '1,200p' pr_diff.txt || true
-          echo "---- PR DIFF END ----"
+          echo "PR diff saved."
 
-      - name: Test AI service connectivity (curl)
-        env:
-          AI_SERVICE_URL: ${{ secrets.AI_SERVICE_URL }}
+      - name: Install Python dependencies
         run: |
-          echo "Testing AI service URL..."
-          curl -v --max-time 20 "${AI_SERVICE_URL}/generate-tests" -H "Content-Type: application/json" -d '{"diff":"test","language":"python","framework":"pytest"}' || true
-          echo "curl exit code: $?"
+          python3 -m pip install --upgrade pip
+          pip install requests
 
-      - name: Call AI service and post comment (with response preview)
+      - name: Call AI service and post comment
         env:
           AI_SERVICE_URL: ${{ secrets.AI_SERVICE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          python - <<'PY'
-import os, requests, sys
-repo = os.environ['REPO']
-pr_number = os.environ['PR_NUMBER']
-api_url = os.environ['AI_SERVICE_URL'].rstrip('/') + '/generate-tests'
-with open('pr_diff.txt') as f:
-    diff = f.read()
-print("Calling AI service:", api_url)
-try:
-    r = requests.post(api_url, json={"diff": diff, "language":"python","framework":"pytest"}, timeout=120)
-except Exception as e:
-    print("ERROR calling AI service:", e)
-    sys.exit(2)
-print("AI service status:", r.status_code)
-if r.status_code != 200:
-    print("AI response text (non-200):")
-    print(r.text)
-    sys.exit(3)
-data = r.json()
-s = data.get('suggestions_markdown', '')
-preview = s[:4000]
-print("=== AI SUGGESTION PREVIEW ===")
-print(preview)
-print("=== END PREVIEW ===")
-# Post comment
-comment_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-resp = requests.post(comment_url,
-                     headers={"Authorization":f"Bearer {os.environ['GITHUB_TOKEN']}", "Accept":"application/vnd.github+json"},
-                     json={"body": s})
-print("Posted comment status:", resp.status_code)
-print("Posted comment response:", resp.text)
-if resp.status_code >= 400:
-    sys.exit(4)
-PY
+          python3 script.py
