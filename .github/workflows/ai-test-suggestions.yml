@@ -1,4 +1,4 @@
-name: AI Test Suggestions
+name: AI Test Suggestions (stable)
 
 on:
   pull_request:
@@ -11,7 +11,6 @@ permissions:
 jobs:
   ai-test-suggestions:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -20,18 +19,88 @@ jobs:
         run: |
           git fetch origin ${{ github.event.pull_request.base.ref }} || true
           git diff origin/${{ github.event.pull_request.base.ref }}...${{ github.event.pull_request.head.ref }} > pr_diff.txt
-          echo "PR diff saved."
+          echo "Saved PR diff (first 200 lines):"
+          head -n 200 pr_diff.txt || true
 
-      - name: Install Python dependencies
+      - name: Install Python deps
         run: |
           python3 -m pip install --upgrade pip
           pip install requests
 
-      - name: Call AI service and post comment
+      - name: Create runner script
+        run: |
+          cat > call_ai_and_comment.py << 'PY'
+#!/usr/bin/env python3
+import os, requests, sys, json
+
+def main():
+    repo = os.environ.get("REPO")
+    pr_number = os.environ.get("PR_NUMBER")
+    api_base = os.environ.get("AI_SERVICE_URL")
+    token = os.environ.get("GITHUB_TOKEN")
+
+    if not api_base or not repo or not pr_number or not token:
+        print("Missing required environment variables. Ensure AI_SERVICE_URL secret is set and workflow has access to GITHUB_TOKEN.")
+        sys.exit(2)
+
+    api_url = api_base.rstrip("/") + "/generate-tests"
+
+    with open("pr_diff.txt", "r", encoding="utf-8", errors="ignore") as f:
+        diff = f.read()
+
+    payload = {"diff": diff, "language": "python", "framework": "pytest"}
+    print("Calling AI service:", api_url)
+    try:
+        r = requests.post(api_url, json=payload, timeout=120)
+    except Exception as e:
+        print("Error calling AI service:", e)
+        sys.exit(3)
+
+    print("AI service status:", r.status_code)
+    if r.status_code != 200:
+        print("AI service response (non-200):")
+        print(r.text[:8000])
+        sys.exit(4)
+
+    try:
+        data = r.json()
+    except Exception as e:
+        print("Failed to parse AI JSON response:", e)
+        print("Raw response (truncated):", r.text[:8000])
+        sys.exit(5)
+
+    suggestions = data.get("suggestions_markdown", "")
+    if not suggestions:
+        suggestions = "*(AI returned no suggestions)*"
+
+    # Truncate if too long
+    max_len = 62000
+    if len(suggestions) > max_len:
+        body = suggestions[:max_len] + "\n\n*(truncated)*"
+    else:
+        body = suggestions
+
+    comment_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    resp = requests.post(comment_url, headers=headers, json={"body": body}, timeout=30)
+    print("Post comment status:", resp.status_code)
+    print("Post comment response (truncated):", resp.text[:1000])
+    if resp.status_code >= 400:
+        sys.exit(6)
+
+if __name__ == '__main__':
+    main()
+PY
+
+      - name: Run script (call AI + post comment)
         env:
           AI_SERVICE_URL: ${{ secrets.AI_SERVICE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          python3 script.py
+          python3 call_ai_and_comment.py
